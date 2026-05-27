@@ -32,8 +32,9 @@ jobs:
           cache: pip
 
       - name: Install light dependencies
-        run: pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
-             numpy opencv-python-headless pyyaml
+        run: |
+          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          pip install numpy opencv-python-headless pyyaml
 
       - name: Syntax check — all Tesla modules
         run: python -m py_compile tesla_detector.py pointnet_classifier.py sensor_fusion.py tesla_evaluate.py
