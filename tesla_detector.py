@@ -1,132 +1,184 @@
-# tesla_detector.py - Tesla-Style Object Detector
-import torch
+# tesla_detector.py - Tesla-Style YOLOv5 Object Detector
+import time
+from pathlib import Path
+from typing import Optional
+
 import cv2
 import numpy as np
-import time
+import torch
+
+# Tesla-relevant COCO class IDs and their names
+TESLA_COCO_CLASSES: dict[int, str] = {
+    0:  "person",
+    2:  "car",
+    3:  "motorcycle",
+    5:  "bus",
+    7:  "truck",
+    9:  "traffic_light",
+    11: "stop_sign",
+}
+
 
 class TeslaStyleDetector:
-    def __init__(self, model_path='yolov5s.pt'):
-        """Initialize detector with YOLOv5 model"""
+    def __init__(self, model_path: str = "yolov5s.pt", conf: float = 0.25, iou: float = 0.45):
         print("Loading YOLOv5 model for Tesla-style detection...")
-        self.model = torch.hub.load('.', 'custom', path=model_path, source='local')
-        self.model.conf = 0.25  # confidence threshold
-        self.model.iou = 0.45   # NMS IoU threshold
+        self.model      = torch.hub.load(".", "custom", path=model_path, source="local")
+        self.model.conf = conf
+        self.model.iou  = iou
+        self._latencies: list[float] = []
         print("Model loaded successfully!")
-        
-    def process_frame(self, frame):
-        """Process single frame and return Tesla-relevant detections"""
-        # Run inference
-        results = self.model(frame)
-        
-        # Get detections as pandas DataFrame
+
+    def process_frame(self, frame: np.ndarray):
+        """
+        Run inference on a single RGB frame.
+        Returns a pandas DataFrame of Tesla-relevant detections.
+        """
+        results    = self.model(frame)
         detections = results.pandas().xyxy[0]
-        
-        # Tesla-relevant COCO classes:
-        # 2: car, 3: motorcycle, 5: bus, 7: truck, 9: traffic light, 11: stop sign
-        tesla_classes = [2, 3, 5, 7, 9, 11]
-        
-        # Filter for Tesla-relevant objects
-        if len(detections) > 0:
-            relevant = detections[detections['class'].isin(tesla_classes)]
-            return relevant
-        return detections
-    
-    def benchmark_latency(self, num_frames=30):
-        """Simple latency benchmark using sample images instead of webcam"""
-        import time
-        
-        print(f"\n⏱️ Running benchmark on sample images for {num_frames} frames...")
-        
-        # Use the sample images we already have
-        test_images = ['data/images/bus.jpg', 'data/images/zidane.jpg']
-        latencies = []
-        frame_count = 0
-        
-        # Loop through images until we reach desired frame count
-        for img_path in test_images * (num_frames // 2 + 1):
-            if frame_count >= num_frames:
-                break
-                
-            # Load and process image
-            img = cv2.imread(img_path)
-            if img is None:
-                print(f"⚠️ Could not load image: {img_path}")
-                continue
-                
-            img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-            
-            # Measure inference time
-            start = time.time()
-            self.process_frame(img_rgb)
-            inference_time = (time.time() - start) * 1000  # convert to ms
-            
-            latencies.append(inference_time)
-            frame_count += 1
-            
-            if frame_count % 10 == 0 or frame_count == num_frames:
-                print(f"  Processed {frame_count}/{num_frames} frames")
-        
-        # Calculate statistics
-        latencies = np.array(latencies)
-        mean_latency = np.mean(latencies)
-        min_latency = np.min(latencies)
-        max_latency = np.max(latencies)
-        std_latency = np.std(latencies)
-        
-        print("\n" + "="*50)
-        print("TESLA LATENCY BENCHMARK RESULTS")
-        print("="*50)
-        print(f"Mean latency: {mean_latency:.2f}ms")
-        print(f"Min latency: {min_latency:.2f}ms")
-        print(f"Max latency: {max_latency:.2f}ms")
-        print(f"Std deviation: {std_latency:.2f}ms")
-        print(f"Estimated FPS: {1000/mean_latency:.1f}")
-        print("="*50)
-        
-        # Tesla target check
-        if mean_latency < 50:
-            print("✅ MEETS TESLA TARGET: <50ms latency!")
+        if len(detections) == 0:
+            return detections
+        return detections[detections["class"].isin(TESLA_COCO_CLASSES)]
+
+    def benchmark_latency(
+        self,
+        image_paths: Optional[list[str]] = None,
+        num_frames: int = 50,
+        warmup: int = 5,
+    ) -> dict:
+        """
+        Measure end-to-end inference latency over N frames.
+
+        Includes a warmup phase (excluded from stats) to avoid JIT cold-start
+        inflation. Reports p50/p90/p99 in addition to mean/min/max — averages
+        alone mask tail latency spikes that matter for real-time systems.
+
+        Returns a dict with all latency stats in milliseconds.
+        """
+        if image_paths is None:
+            image_paths = ["data/images/bus.jpg", "data/images/zidane.jpg"]
+
+        # Load images once
+        frames: list[np.ndarray] = []
+        for p in image_paths:
+            img = cv2.imread(p)
+            if img is not None:
+                frames.append(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+            else:
+                print(f"  Warning: could not load {p}")
+        if not frames:
+            raise RuntimeError("No valid images found for benchmark.")
+
+        total_needed = warmup + num_frames
+        frame_cycle  = [frames[i % len(frames)] for i in range(total_needed)]
+
+        print(f"\nRunning latency benchmark ({warmup} warmup + {num_frames} measured frames)...")
+        latencies: list[float] = []
+
+        for i, frame in enumerate(frame_cycle):
+            t0      = time.perf_counter()
+            self.process_frame(frame)
+            elapsed = (time.perf_counter() - t0) * 1000  # → ms
+
+            if i >= warmup:
+                latencies.append(elapsed)
+            if (i + 1) % 10 == 0:
+                print(f"  {i + 1 - warmup:>3}/{num_frames} measured frames")
+
+        arr = np.array(latencies)
+        stats = {
+            "frames":   len(arr),
+            "mean_ms":  float(np.mean(arr)),
+            "p50_ms":   float(np.percentile(arr, 50)),
+            "p90_ms":   float(np.percentile(arr, 90)),
+            "p99_ms":   float(np.percentile(arr, 99)),
+            "min_ms":   float(np.min(arr)),
+            "max_ms":   float(np.max(arr)),
+            "std_ms":   float(np.std(arr)),
+            "fps":      float(1000.0 / np.mean(arr)),
+        }
+
+        self._latencies.extend(latencies)
+
+        width = 48
+        print("\n" + "=" * width)
+        print("  TESLA CAMERA LATENCY BENCHMARK")
+        print("=" * width)
+        print(f"  Frames measured : {stats['frames']}")
+        print(f"  Mean            : {stats['mean_ms']:6.2f} ms")
+        print(f"  p50             : {stats['p50_ms']:6.2f} ms")
+        print(f"  p90             : {stats['p90_ms']:6.2f} ms")
+        print(f"  p99             : {stats['p99_ms']:6.2f} ms   ← tail")
+        print(f"  Min / Max       : {stats['min_ms']:.2f} / {stats['max_ms']:.2f} ms")
+        print(f"  Estimated FPS   : {stats['fps']:.1f}")
+        print("=" * width)
+
+        target_ms = 50.0
+        if stats["p99_ms"] < target_ms:
+            print(f"  ✓ p99 < {target_ms:.0f}ms  — meets Tesla real-time target")
+        elif stats["mean_ms"] < target_ms:
+            print(f"  ~ mean < {target_ms:.0f}ms but p99={stats['p99_ms']:.1f}ms — tail needs work")
         else:
-            print("⚠️ Needs optimization to meet Tesla's 50ms target")
-        
-        return mean_latency
-    
-    def visualize_detections(self, image_path, save_path='tesla_detection_result.jpg'):
-        """Run detection on an image and save visualization"""
-        # Load image
+            print(f"  ✗ mean {stats['mean_ms']:.1f}ms > {target_ms:.0f}ms — optimisation required")
+
+        return stats
+
+    def visualize_detections(
+        self,
+        image_path: str,
+        save_path: str = "tesla_detection_result.jpg",
+    ) -> Optional[np.ndarray]:
+        """Run detection on a single image, render bounding boxes, and save."""
         img = cv2.imread(image_path)
         if img is None:
-            print(f"⚠️ Could not load image: {image_path}")
+            print(f"Warning: could not load {image_path}")
             return None
-            
+
         img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        
-        # Run detection
-        results = self.model(img_rgb)
-        
-        # Render results on image
-        rendered = results.render()[0]
+        results  = self.model(img_rgb)
+
+        rendered     = results.render()[0]
         rendered_bgr = cv2.cvtColor(rendered, cv2.COLOR_RGB2BGR)
-        
-        # Save
         cv2.imwrite(save_path, rendered_bgr)
-        print(f"✅ Saved: {save_path}")
-        
-        # Print detections summary
-        detections = results.pandas().xyxy[0]
-        tesla_relevant = self.process_frame(img_rgb)
-        print(f"  Found {len(tesla_relevant)} Tesla-relevant objects")
-        
+
+        relevant = self.process_frame(img_rgb)
+        print(f"Saved {save_path}  ({len(relevant)} Tesla-relevant detections)")
+
+        for _, row in relevant.iterrows():
+            cid  = int(row["class"])
+            name = TESLA_COCO_CLASSES.get(cid, "unknown")
+            print(f"  {name:14s}  conf={row['confidence']:.2f}  "
+                  f"bbox=[{int(row['xmin'])},{int(row['ymin'])},{int(row['xmax'])},{int(row['ymax'])}]")
+
         return rendered_bgr
 
-# Quick test if run directly
+    def detection_summary(self, frame: np.ndarray) -> dict:
+        """
+        Return a structured summary of detections in one frame.
+        Useful for the fusion pipeline.
+        """
+        df   = self.process_frame(frame)
+        dets = []
+        for _, row in df.iterrows():
+            dets.append({
+                "class_id":   int(row["class"]),
+                "class_name": TESLA_COCO_CLASSES.get(int(row["class"]), "unknown"),
+                "confidence": float(row["confidence"]),
+                "bbox":       [float(row["xmin"]), float(row["ymin"]),
+                               float(row["xmax"]), float(row["ymax"])],
+            })
+        return {"detections": dets, "count": len(dets)}
+
+
 if __name__ == "__main__":
     detector = TeslaStyleDetector()
-    
-    # Test on sample images
-    print("\n📸 Testing on sample images...")
-    detector.visualize_detections('data/images/bus.jpg', 'tesla_bus.jpg')
-    detector.visualize_detections('data/images/zidane.jpg', 'tesla_zidane.jpg')
-    
-    # Run latency benchmark
+
+    print("\n--- Detection on sample images ---")
+    for img_path, out_path in [
+        ("data/images/bus.jpg",    "tesla_bus.jpg"),
+        ("data/images/zidane.jpg", "tesla_zidane.jpg"),
+    ]:
+        if Path(img_path).exists():
+            detector.visualize_detections(img_path, out_path)
+
+    print("\n--- Latency benchmark ---")
     detector.benchmark_latency(num_frames=30)

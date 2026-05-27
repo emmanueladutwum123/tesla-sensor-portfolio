@@ -1,0 +1,173 @@
+name: Tesla Sensor Portfolio CI
+
+on:
+  push:
+    paths:
+      - "tesla_detector.py"
+      - "pointnet_classifier.py"
+      - "sensor_fusion.py"
+      - "tesla_evaluate.py"
+      - "data/tesla.yaml"
+      - ".github/workflows/tesla_ci.yml"
+  pull_request:
+    paths:
+      - "tesla_detector.py"
+      - "pointnet_classifier.py"
+      - "sensor_fusion.py"
+      - "tesla_evaluate.py"
+
+jobs:
+  # -----------------------------------------------------------------------
+  # 1. Lint + import checks (fast, no GPU needed)
+  # -----------------------------------------------------------------------
+  lint:
+    name: Lint & import checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install light dependencies
+        run: pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+             numpy opencv-python-headless pyyaml
+
+      - name: Syntax check — all Tesla modules
+        run: python -m py_compile tesla_detector.py pointnet_classifier.py sensor_fusion.py tesla_evaluate.py
+
+      - name: Import check — pointnet_classifier
+        run: python -c "from pointnet_classifier import PointNetClassifier, LiDARClassifier, TESLA_LIDAR_CLASSES; print('OK')"
+
+      - name: Import check — sensor_fusion
+        run: python -c "from sensor_fusion import SensorFusion, CameraDetection, LiDARDetection, FusedDetection; print('OK')"
+
+      - name: Validate tesla.yaml
+        run: |
+          python -c "
+          import yaml
+          with open('data/tesla.yaml') as f:
+              cfg = yaml.safe_load(f)
+          assert 'nc' in cfg, 'missing nc'
+          assert 'names' in cfg, 'missing names'
+          assert 'lidar_nc' in cfg, 'missing lidar_nc'
+          assert 'targets' in cfg, 'missing targets'
+          print('tesla.yaml OK — nc=%d  lidar_nc=%d' % (cfg['nc'], cfg['lidar_nc']))
+          "
+
+  # -----------------------------------------------------------------------
+  # 2. Unit tests for PointNet and fusion logic
+  # -----------------------------------------------------------------------
+  unit-tests:
+    name: Unit tests (CPU)
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          pip install numpy opencv-python-headless
+
+      - name: PointNet — forward pass (batch of 4, 512 points)
+        run: |
+          python -c "
+          import torch
+          from pointnet_classifier import PointNetClassifier, feature_transform_regularizer, TESLA_LIDAR_CLASSES
+          model = PointNetClassifier(num_classes=len(TESLA_LIDAR_CLASSES))
+          pts   = torch.randn(4, 512, 3)
+          logits, tmat = model(pts)
+          assert logits.shape == (4, len(TESLA_LIDAR_CLASSES)), f'bad shape: {logits.shape}'
+          reg = feature_transform_regularizer(tmat)
+          assert reg.item() >= 0, 'reg must be non-negative'
+          print(f'PointNet forward OK — logits {logits.shape}  reg={reg.item():.4f}')
+          "
+
+      - name: PointNet — TNet sizes (k=3 and k=64)
+        run: |
+          python -c "
+          import torch
+          from pointnet_classifier import TNet
+          for k in (3, 64):
+              net = TNet(k)
+              x   = torch.randn(2, k, 256)
+              out = net(x)
+              assert out.shape == (2, k, k), f'TNet({k}) bad shape: {out.shape}'
+          print('TNet OK')
+          "
+
+      - name: Sensor fusion — synthetic round-trip
+        run: |
+          python -c "
+          import numpy as np
+          from sensor_fusion import (
+              SensorFusion, CameraDetection, LiDARDetection,
+              CameraLiDARCalibration, bbox_iou,
+          )
+
+          # IoU sanity
+          a = np.array([0,0,10,10], dtype=float)
+          b = np.array([5,5,15,15], dtype=float)
+          assert abs(bbox_iou(a, b) - 25/175) < 1e-6, 'bbox_iou wrong'
+
+          # Fusion with matching pair
+          calib = CameraLiDARCalibration(image_wh=(1280, 720))
+          sf    = SensorFusion(calib=calib, iou_threshold=0.01)
+
+          cam = CameraDetection('car', 2, 0.9, np.array([300.,200.,600.,450.]))
+          # centroid that projects into the image
+          lid = LiDARDetection('car', 0, 0.85, np.array([15., 0., 0.]))
+
+          result = sf.fuse([cam], [lid])
+          assert len(result) > 0, 'no detections returned'
+          sources = {d.source for d in result}
+          print(f'Fusion OK — sources={sources}  dets={len(result)}')
+          "
+
+      - name: Sensor fusion — FOK (insufficient camera + LiDAR-only survives)
+        run: |
+          python -c "
+          import numpy as np
+          from sensor_fusion import SensorFusion, LiDARDetection, CameraLiDARCalibration
+          calib = CameraLiDARCalibration()
+          sf    = SensorFusion(calib=calib)
+          lid   = LiDARDetection('truck', 3, 0.75, np.array([50., 50., 1.]))
+          result = sf.fuse([], [lid])
+          assert len(result) == 1
+          assert result[0].source == 'lidar_only'
+          print('Lidar-only passthrough OK')
+          "
+
+  # -----------------------------------------------------------------------
+  # 3. Sensor fusion demo (validates the CLI entry point)
+  # -----------------------------------------------------------------------
+  fusion-demo:
+    name: Fusion CLI demo
+    runs-on: ubuntu-latest
+    needs: unit-tests
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          pip install numpy opencv-python-headless
+
+      - name: Run fusion demo
+        run: python sensor_fusion.py
+
+      - name: Run PointNet demo
+        run: python pointnet_classifier.py demo
