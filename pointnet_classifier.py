@@ -1,5 +1,5 @@
 """
-PointNet LiDAR Point Cloud Classifier — Tesla Sensor Portfolio
+PointNet LiDAR Point Cloud Classifier — Tesla Sensor Portfolio.
 
 Architecture: Qi et al., "PointNet: Deep Learning on Point Sets for 3D
 Classification and Segmentation" (CVPR 2017).
@@ -8,12 +8,12 @@ Tesla-relevant classes:
   0 car  1 pedestrian  2 cyclist  3 truck  4 cone  5 background
 """
 
+from pathlib import Path
+
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import numpy as np
-from pathlib import Path
-
 
 TESLA_LIDAR_CLASSES = ["car", "pedestrian", "cyclist", "truck", "cone", "background"]
 
@@ -21,6 +21,7 @@ TESLA_LIDAR_CLASSES = ["car", "pedestrian", "cyclist", "truck", "cone", "backgro
 # ---------------------------------------------------------------------------
 # Sub-networks
 # ---------------------------------------------------------------------------
+
 
 class TNet(nn.Module):
     """Spatial transformer network: predicts a k×k alignment matrix."""
@@ -31,26 +32,26 @@ class TNet(nn.Module):
         self.conv1 = nn.Conv1d(k, 64, 1)
         self.conv2 = nn.Conv1d(64, 128, 1)
         self.conv3 = nn.Conv1d(128, 1024, 1)
-        self.fc1   = nn.Linear(1024, 512)
-        self.fc2   = nn.Linear(512, 256)
-        self.fc3   = nn.Linear(256, k * k)
-        self.bn1   = nn.BatchNorm1d(64)
-        self.bn2   = nn.BatchNorm1d(128)
-        self.bn3   = nn.BatchNorm1d(1024)
-        self.bn4   = nn.BatchNorm1d(512)
-        self.bn5   = nn.BatchNorm1d(256)
+        self.fc1 = nn.Linear(1024, 512)
+        self.fc2 = nn.Linear(512, 256)
+        self.fc3 = nn.Linear(256, k * k)
+        self.bn1 = nn.BatchNorm1d(64)
+        self.bn2 = nn.BatchNorm1d(128)
+        self.bn3 = nn.BatchNorm1d(1024)
+        self.bn4 = nn.BatchNorm1d(512)
+        self.bn5 = nn.BatchNorm1d(256)
 
     def forward(self, x):
         # x: (B, k, N)
         x = F.relu(self.bn1(self.conv1(x)))
         x = F.relu(self.bn2(self.conv2(x)))
         x = F.relu(self.bn3(self.conv3(x)))
-        x = x.max(dim=2)[0]               # global max pool → (B, 1024)
+        x = x.max(dim=2)[0]  # global max pool → (B, 1024)
         x = F.relu(self.bn4(self.fc1(x)))
         x = F.relu(self.bn5(self.fc2(x)))
-        x = self.fc3(x)                   # (B, k*k)
+        x = self.fc3(x)  # (B, k*k)
 
-        # initialise to identity
+        # initialize to identity
         eye = torch.eye(self.k, device=x.device).view(1, self.k * self.k).repeat(x.size(0), 1)
         x = x + eye
         return x.view(-1, self.k, self.k)
@@ -62,7 +63,7 @@ class PointNetEncoder(nn.Module):
     def __init__(self, global_feat: bool = True):
         super().__init__()
         self.global_feat = global_feat
-        self.tnet3  = TNet(k=3)
+        self.tnet3 = TNet(k=3)
         self.tnet64 = TNet(k=64)
 
         self.conv1 = nn.Conv1d(3, 64, 1)
@@ -79,25 +80,25 @@ class PointNetEncoder(nn.Module):
 
     def forward(self, x):
         # x: (B, 3, N)
-        B, _, N = x.shape
+        _B, _, N = x.shape
 
         # Input transform
-        t3   = self.tnet3(x)
-        x    = torch.bmm(t3, x)
+        t3 = self.tnet3(x)
+        x = torch.bmm(t3, x)
 
-        x    = F.relu(self.bn1(self.conv1(x)))
-        x    = F.relu(self.bn2(self.conv2(x)))
+        x = F.relu(self.bn1(self.conv1(x)))
+        x = F.relu(self.bn2(self.conv2(x)))
 
         # Feature transform
-        t64  = self.tnet64(x)
-        x    = torch.bmm(t64, x)
-        local_feat = x                    # (B, 64, N) — kept for seg head
+        t64 = self.tnet64(x)
+        x = torch.bmm(t64, x)
+        local_feat = x  # (B, 64, N) — kept for seg head
 
-        x    = F.relu(self.bn3(self.conv3(x)))
-        x    = F.relu(self.bn4(self.conv4(x)))
-        x    = self.bn5(self.conv5(x))    # (B, 1024, N)
+        x = F.relu(self.bn3(self.conv3(x)))
+        x = F.relu(self.bn4(self.conv4(x)))
+        x = self.bn5(self.conv5(x))  # (B, 1024, N)
 
-        global_feat = x.max(dim=2)[0]    # (B, 1024)
+        global_feat = x.max(dim=2)[0]  # (B, 1024)
 
         if self.global_feat:
             return global_feat, t64
@@ -130,24 +131,25 @@ class PointNetClassifier(nn.Module):
 
 
 # ---------------------------------------------------------------------------
-# Regularisation loss
+# Regularization loss
 # ---------------------------------------------------------------------------
+
 
 def feature_transform_regularizer(tmat: torch.Tensor) -> torch.Tensor:
     """||I - A·Aᵀ||_F loss to keep the feature transform close to orthogonal."""
     B, K, _ = tmat.shape
     I = torch.eye(K, device=tmat.device).unsqueeze(0).expand(B, -1, -1)
     diff = I - torch.bmm(tmat, tmat.transpose(2, 1))
-    return (diff ** 2).sum(dim=(1, 2)).mean()
+    return (diff**2).sum(dim=(1, 2)).mean()
 
 
 # ---------------------------------------------------------------------------
 # Dataset helper
 # ---------------------------------------------------------------------------
 
+
 class PointCloudDataset(torch.utils.data.Dataset):
-    """
-    Expects .npy files, each shaped (N, 3) with a corresponding _label.txt.
+    """Expects .npy files, each shaped (N, 3) with a corresponding _label.txt.
 
     Directory layout:
         root/
@@ -157,11 +159,11 @@ class PointCloudDataset(torch.utils.data.Dataset):
     """
 
     def __init__(self, root: str, num_points: int = 1024, augment: bool = True):
-        self.root       = Path(root)
+        self.root = Path(root)
         self.num_points = num_points
-        self.augment    = augment
-        self.class_map  = {c: i for i, c in enumerate(TESLA_LIDAR_CLASSES)}
-        self.samples    = []
+        self.augment = augment
+        self.class_map = {c: i for i, c in enumerate(TESLA_LIDAR_CLASSES)}
+        self.samples = []
 
         for class_dir in self.root.iterdir():
             if class_dir.is_dir() and class_dir.name in self.class_map:
@@ -183,17 +185,17 @@ class PointCloudDataset(torch.utils.data.Dataset):
     def _augment(self, pts: np.ndarray) -> np.ndarray:
         # Random rotation about the up-axis (z)
         theta = np.random.uniform(0, 2 * np.pi)
-        c, s  = np.cos(theta), np.sin(theta)
-        R     = np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]], dtype=np.float32)
-        pts   = pts @ R.T
+        c, s = np.cos(theta), np.sin(theta)
+        R = np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]], dtype=np.float32)
+        pts = pts @ R.T
         # Jitter
-        pts  += np.random.randn(*pts.shape).astype(np.float32) * 0.02
+        pts += np.random.randn(*pts.shape).astype(np.float32) * 0.02
         return pts
 
     def __getitem__(self, idx):
         path, label = self.samples[idx]
         pts = np.load(path).astype(np.float32)
-        # Normalise to unit sphere
+        # Normalize to unit sphere
         pts -= pts.mean(axis=0)
         dist = np.linalg.norm(pts, axis=1).max()
         if dist > 0:
@@ -208,6 +210,7 @@ class PointCloudDataset(torch.utils.data.Dataset):
 # Training loop
 # ---------------------------------------------------------------------------
 
+
 def train(
     data_root: str = "data/lidar",
     epochs: int = 50,
@@ -220,14 +223,14 @@ def train(
     print(f"Training on {device}")
 
     dataset = PointCloudDataset(data_root, num_points=num_points, augment=True)
-    n_val   = max(1, int(0.15 * len(dataset)))
+    n_val = max(1, int(0.15 * len(dataset)))
     n_train = len(dataset) - n_val
     train_ds, val_ds = torch.utils.data.random_split(dataset, [n_train, n_val])
 
-    train_loader = torch.utils.data.DataLoader(train_ds, batch_size=batch_size, shuffle=True,  num_workers=2)
-    val_loader   = torch.utils.data.DataLoader(val_ds,   batch_size=batch_size, shuffle=False, num_workers=2)
+    train_loader = torch.utils.data.DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=2)
+    val_loader = torch.utils.data.DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=2)
 
-    model     = PointNetClassifier().to(device)
+    model = PointNetClassifier().to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.5)
 
@@ -244,8 +247,8 @@ def train(
             loss.backward()
             optimizer.step()
             total_loss += loss.item() * len(labels)
-            correct    += (preds.argmax(1) == labels).sum().item()
-            total      += len(labels)
+            correct += (preds.argmax(1) == labels).sum().item()
+            total += len(labels)
         scheduler.step()
 
         # -- validate --
@@ -254,13 +257,15 @@ def train(
         with torch.no_grad():
             for pts, labels in val_loader:
                 pts, labels = pts.to(device), labels.to(device)
-                preds, _    = model(pts)
+                preds, _ = model(pts)
                 val_correct += (preds.argmax(1) == labels).sum().item()
-                val_total   += len(labels)
+                val_total += len(labels)
 
         val_acc = val_correct / val_total if val_total else 0.0
-        print(f"Epoch {epoch:3d}/{epochs}  loss={total_loss/total:.4f}  "
-              f"train_acc={correct/total:.3f}  val_acc={val_acc:.3f}")
+        print(
+            f"Epoch {epoch:3d}/{epochs}  loss={total_loss / total:.4f}  "
+            f"train_acc={correct / total:.3f}  val_acc={val_acc:.3f}"
+        )
 
         if val_acc > best_acc:
             best_acc = val_acc
@@ -275,17 +280,16 @@ def train(
 # Inference helper
 # ---------------------------------------------------------------------------
 
+
 class LiDARClassifier:
-    """
-    Thin inference wrapper around a trained PointNetClassifier.
-    Clusters an incoming point cloud (numpy N×3) into segments and
-    returns per-segment (class_name, confidence, centroid) triples.
+    """Thin inference wrapper around a trained PointNetClassifier. Clusters an incoming point cloud (numpy N×3) into
+    segments and returns per-segment (class_name, confidence, centroid) triples.
     """
 
     def __init__(self, weights: str = "pointnet_tesla.pt", num_points: int = 1024):
-        self.num_points  = num_points
-        self.device      = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.model       = PointNetClassifier().to(self.device)
+        self.num_points = num_points
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.model = PointNetClassifier().to(self.device)
         if Path(weights).exists():
             self.model.load_state_dict(torch.load(weights, map_location=self.device))
             print(f"Loaded PointNet weights from {weights}")
@@ -309,16 +313,17 @@ class LiDARClassifier:
         """
         Args:
             pts: (N, 3+) array of LiDAR points (only first 3 columns used).
+
         Returns:
-            list of dicts: {class_name, class_id, confidence, centroid, num_points}
+            list of dicts: {class_name, class_id, confidence, centroid, num_points}.
         """
         segments = self._cluster(pts[:, :3], voxel_size)
-        results  = []
+        results = []
         for seg in segments:
             centroid = seg.mean(axis=0)
-            # Normalise
+            # Normalize
             seg = seg - seg.mean(axis=0)
-            d   = np.linalg.norm(seg, axis=1).max()
+            d = np.linalg.norm(seg, axis=1).max()
             if d > 0:
                 seg /= d
             # Sample
@@ -331,16 +336,18 @@ class LiDARClassifier:
 
             tensor = torch.from_numpy(seg).unsqueeze(0).to(self.device)
             logits, _ = self.model(tensor)
-            probs     = logits.exp().squeeze()
-            cls_id    = int(probs.argmax())
-            conf      = float(probs[cls_id])
-            results.append({
-                "class_name": TESLA_LIDAR_CLASSES[cls_id],
-                "class_id":   cls_id,
-                "confidence": conf,
-                "centroid":   centroid,
-                "num_points": n,
-            })
+            probs = logits.exp().squeeze()
+            cls_id = int(probs.argmax())
+            conf = float(probs[cls_id])
+            results.append(
+                {
+                    "class_name": TESLA_LIDAR_CLASSES[cls_id],
+                    "class_id": cls_id,
+                    "confidence": conf,
+                    "centroid": centroid,
+                    "num_points": n,
+                }
+            )
         return results
 
 
@@ -355,15 +362,15 @@ if __name__ == "__main__":
     sub = parser.add_subparsers(dest="cmd")
 
     tr = sub.add_parser("train", help="Train on a labeled point cloud dataset")
-    tr.add_argument("--data",       default="data/lidar", help="Dataset root")
-    tr.add_argument("--epochs",     type=int, default=50)
+    tr.add_argument("--data", default="data/lidar", help="Dataset root")
+    tr.add_argument("--epochs", type=int, default=50)
     tr.add_argument("--batch-size", type=int, default=32)
-    tr.add_argument("--lr",         type=float, default=1e-3)
+    tr.add_argument("--lr", type=float, default=1e-3)
     tr.add_argument("--num-points", type=int, default=1024)
-    tr.add_argument("--save",       default="pointnet_tesla.pt")
+    tr.add_argument("--save", default="pointnet_tesla.pt")
 
     inf = sub.add_parser("infer", help="Classify a .npy point cloud file")
-    inf.add_argument("file",     help="Path to .npy point cloud (N×3+)")
+    inf.add_argument("file", help="Path to .npy point cloud (N×3+)")
     inf.add_argument("--weights", default="pointnet_tesla.pt")
 
     demo = sub.add_parser("demo", help="Run on a synthetic point cloud")
@@ -381,14 +388,16 @@ if __name__ == "__main__":
         )
 
     elif args.cmd == "infer":
-        clf  = LiDARClassifier(weights=args.weights)
-        pts  = np.load(args.file)
+        clf = LiDARClassifier(weights=args.weights)
+        pts = np.load(args.file)
         dets = clf.classify_cloud(pts)
         print(f"\nDetections in {args.file}:")
         for d in dets:
-            print(f"  {d['class_name']:12s}  conf={d['confidence']:.3f}  "
-                  f"centroid=({d['centroid'][0]:.1f}, {d['centroid'][1]:.1f}, {d['centroid'][2]:.1f})  "
-                  f"pts={d['num_points']}")
+            print(
+                f"  {d['class_name']:12s}  conf={d['confidence']:.3f}  "
+                f"centroid=({d['centroid'][0]:.1f}, {d['centroid'][1]:.1f}, {d['centroid'][2]:.1f})  "
+                f"pts={d['num_points']}"
+            )
 
     else:  # demo / no command
         print("Demo: classifying a synthetic 'car-like' point cloud (no trained weights).")
