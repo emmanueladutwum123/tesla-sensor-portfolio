@@ -1,5 +1,5 @@
 """
-tesla_evaluate.py — End-to-End Evaluation Script
+tesla_evaluate.py — End-to-End Evaluation Script.
 
 Runs each component (camera detector, LiDAR classifier, fusion pipeline)
 on test data, prints a structured report, and optionally saves JSON results.
@@ -18,14 +18,13 @@ import argparse
 import json
 import time
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
-
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _banner(title: str, width: int = 56) -> None:
     print("\n" + "=" * width)
@@ -35,22 +34,25 @@ def _banner(title: str, width: int = 56) -> None:
 
 def _print_latency(stats: dict, label: str = "") -> None:
     prefix = f"  [{label}] " if label else "  "
-    print(f"{prefix}mean={stats['mean_ms']:.1f}ms  "
-          f"p50={stats['p50_ms']:.1f}  "
-          f"p90={stats['p90_ms']:.1f}  "
-          f"p99={stats['p99_ms']:.1f}  "
-          f"fps={stats['fps']:.1f}")
+    print(
+        f"{prefix}mean={stats['mean_ms']:.1f}ms  "
+        f"p50={stats['p50_ms']:.1f}  "
+        f"p90={stats['p90_ms']:.1f}  "
+        f"p99={stats['p99_ms']:.1f}  "
+        f"fps={stats['fps']:.1f}"
+    )
 
 
 # ---------------------------------------------------------------------------
 # Camera-only evaluation
 # ---------------------------------------------------------------------------
 
+
 def evaluate_camera(
     images_dir: str = "data/images",
     model_path: str = "yolov5s.pt",
     num_frames: int = 30,
-    save_json:  Optional[str] = None,
+    save_json: str | None = None,
 ) -> dict:
     from tesla_detector import TeslaStyleDetector
 
@@ -63,6 +65,7 @@ def evaluate_camera(
         return {}
 
     import cv2
+
     all_dets: list[dict] = []
     class_counts: dict[str, int] = {}
 
@@ -98,13 +101,14 @@ def evaluate_camera(
 # LiDAR-only evaluation
 # ---------------------------------------------------------------------------
 
+
 def evaluate_lidar(
-    lidar_dir:   str = "data/lidar_test",
-    weights:     str = "pointnet_tesla.pt",
-    num_points:  int = 1024,
-    save_json:   Optional[str] = None,
+    lidar_dir: str = "data/lidar_test",
+    weights: str = "pointnet_tesla.pt",
+    num_points: int = 1024,
+    save_json: str | None = None,
 ) -> dict:
-    from pointnet_classifier import LiDARClassifier, TESLA_LIDAR_CLASSES
+    from pointnet_classifier import LiDARClassifier
 
     _banner("LiDAR Classification Evaluation (PointNet)")
     clf = LiDARClassifier(weights=weights, num_points=num_points)
@@ -119,7 +123,7 @@ def evaluate_lidar(
     all_confs: list[float] = []
 
     def _eval_pts(pts: np.ndarray) -> None:
-        t0   = time.perf_counter()
+        t0 = time.perf_counter()
         dets = clf.classify_cloud(pts)
         latencies.append((time.perf_counter() - t0) * 1000)
         for d in dets:
@@ -138,14 +142,14 @@ def evaluate_lidar(
 
     arr = np.array(latencies) if latencies else np.array([0.0])
     lat_stats = {
-        "frames":   len(arr),
-        "mean_ms":  float(np.mean(arr)),
-        "p50_ms":   float(np.percentile(arr, 50)),
-        "p90_ms":   float(np.percentile(arr, 90)),
-        "p99_ms":   float(np.percentile(arr, 99)),
-        "min_ms":   float(np.min(arr)),
-        "max_ms":   float(np.max(arr)),
-        "fps":      float(1000.0 / max(np.mean(arr), 1e-3)),
+        "frames": len(arr),
+        "mean_ms": float(np.mean(arr)),
+        "p50_ms": float(np.percentile(arr, 50)),
+        "p90_ms": float(np.percentile(arr, 90)),
+        "p99_ms": float(np.percentile(arr, 99)),
+        "min_ms": float(np.min(arr)),
+        "max_ms": float(np.max(arr)),
+        "fps": float(1000.0 / max(np.mean(arr), 1e-3)),
     }
 
     _print_latency(lat_stats, "LiDAR classify")
@@ -173,28 +177,30 @@ def evaluate_lidar(
 # Fusion evaluation
 # ---------------------------------------------------------------------------
 
+
 def evaluate_fusion(
-    images_dir:  str = "data/images",
-    lidar_dir:   str = "data/lidar_test",
-    model_path:  str = "yolov5s.pt",
-    weights:     str = "pointnet_tesla.pt",
-    num_frames:  int = 20,
-    save_json:   Optional[str] = None,
+    images_dir: str = "data/images",
+    lidar_dir: str = "data/lidar_test",
+    model_path: str = "yolov5s.pt",
+    weights: str = "pointnet_tesla.pt",
+    num_frames: int = 20,
+    save_json: str | None = None,
 ) -> dict:
     import cv2
-    from sensor_fusion import SensorFusion, CameraDetection, LiDARDetection, CameraLiDARCalibration
-    from tesla_detector import TeslaStyleDetector, TESLA_COCO_CLASSES
+
     from pointnet_classifier import LiDARClassifier
+    from sensor_fusion import CameraDetection, CameraLiDARCalibration, LiDARDetection, SensorFusion
+    from tesla_detector import TESLA_COCO_CLASSES, TeslaStyleDetector
 
     _banner("Sensor Fusion Evaluation (Camera + LiDAR)")
 
-    detector  = TeslaStyleDetector(model_path=model_path)
-    clf       = LiDARClassifier(weights=weights)
-    calib     = CameraLiDARCalibration()
-    fusion    = SensorFusion(calib=calib)
+    detector = TeslaStyleDetector(model_path=model_path)
+    clf = LiDARClassifier(weights=weights)
+    calib = CameraLiDARCalibration()
+    fusion = SensorFusion(calib=calib)
 
-    img_paths  = list(Path(images_dir).glob("*.jpg")) + list(Path(images_dir).glob("*.png"))
-    npy_files  = list(Path(lidar_dir).glob("*.npy")) if Path(lidar_dir).exists() else []
+    img_paths = list(Path(images_dir).glob("*.jpg")) + list(Path(images_dir).glob("*.png"))
+    npy_files = list(Path(lidar_dir).glob("*.npy")) if Path(lidar_dir).exists() else []
 
     latencies: list[float] = []
     source_counts = {"fused": 0, "camera_only": 0, "lidar_only": 0}
@@ -210,37 +216,39 @@ def evaluate_fusion(
                 df = detector.process_frame(img_rgb)
                 for _, row in df.iterrows():
                     cid = int(row["class"])
-                    cam_dets.append(CameraDetection(
-                        class_name  = TESLA_COCO_CLASSES.get(cid, "unknown"),
-                        class_id    = cid,
-                        confidence  = float(row["confidence"]),
-                        bbox        = np.array([row["xmin"], row["ymin"],
-                                                row["xmax"], row["ymax"]]),
-                    ))
+                    cam_dets.append(
+                        CameraDetection(
+                            class_name=TESLA_COCO_CLASSES.get(cid, "unknown"),
+                            class_id=cid,
+                            confidence=float(row["confidence"]),
+                            bbox=np.array([row["xmin"], row["ymin"], row["xmax"], row["ymax"]]),
+                        )
+                    )
 
         # LiDAR
         lidar_dets: list[LiDARDetection] = []
         if npy_files:
-            pts  = np.load(str(npy_files[i % len(npy_files)]))
-            raw  = clf.classify_cloud(pts)
+            pts = np.load(str(npy_files[i % len(npy_files)]))
+            raw = clf.classify_cloud(pts)
         else:
-            pts  = np.random.randn(2048, 3).astype(np.float32)
-            raw  = clf.classify_cloud(pts)
+            pts = np.random.randn(2048, 3).astype(np.float32)
+            raw = clf.classify_cloud(pts)
 
-        from pointnet_classifier import TESLA_LIDAR_CLASSES
         for d in raw:
             if d["class_name"] == "background":
                 continue
-            lidar_dets.append(LiDARDetection(
-                class_name  = d["class_name"],
-                class_id    = d["class_id"],
-                confidence  = d["confidence"],
-                centroid    = np.asarray(d["centroid"]),
-                num_points  = d.get("num_points", 0),
-            ))
+            lidar_dets.append(
+                LiDARDetection(
+                    class_name=d["class_name"],
+                    class_id=d["class_id"],
+                    confidence=d["confidence"],
+                    centroid=np.asarray(d["centroid"]),
+                    num_points=d.get("num_points", 0),
+                )
+            )
 
-        t0      = time.perf_counter()
-        result  = fusion.fuse(cam_dets, lidar_dets)
+        t0 = time.perf_counter()
+        result = fusion.fuse(cam_dets, lidar_dets)
         elapsed = (time.perf_counter() - t0) * 1000
         latencies.append(elapsed)
 
@@ -250,17 +258,17 @@ def evaluate_fusion(
 
     arr = np.array(latencies) if latencies else np.array([0.0])
     lat_stats = {
-        "frames":  len(arr),
+        "frames": len(arr),
         "mean_ms": float(np.mean(arr)),
-        "p50_ms":  float(np.percentile(arr, 50)),
-        "p90_ms":  float(np.percentile(arr, 90)),
-        "p99_ms":  float(np.percentile(arr, 99)),
-        "fps":     float(1000.0 / max(np.mean(arr), 1e-3)),
+        "p50_ms": float(np.percentile(arr, 50)),
+        "p90_ms": float(np.percentile(arr, 90)),
+        "p99_ms": float(np.percentile(arr, 99)),
+        "fps": float(1000.0 / max(np.mean(arr), 1e-3)),
     }
 
     _print_latency(lat_stats, "fusion step")
     print(f"\n  Total fused detections   : {total_dets}")
-    print(f"  Source breakdown:")
+    print("  Source breakdown:")
     for src, cnt in source_counts.items():
         print(f"    {src:<16}: {cnt}")
 
@@ -277,11 +285,12 @@ def evaluate_fusion(
 # Full benchmark report
 # ---------------------------------------------------------------------------
 
+
 def run_full_benchmark(
     images_dir: str = "data/images",
-    lidar_dir:  str = "data/lidar_test",
-    frames:     int = 50,
-    save_dir:   Optional[str] = None,
+    lidar_dir: str = "data/lidar_test",
+    frames: int = 50,
+    save_dir: str | None = None,
 ) -> None:
     _banner("Tesla Sensor Portfolio — Full Benchmark", width=60)
     print(f"  Camera images : {images_dir}")
@@ -325,17 +334,17 @@ def run_full_benchmark(
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description="Tesla Sensor Portfolio — Evaluation")
-    p.add_argument("--camera-only",  action="store_true")
-    p.add_argument("--lidar-only",   action="store_true")
-    p.add_argument("--fusion",       action="store_true")
-    p.add_argument("--benchmark",    action="store_true", help="Full benchmark of all components")
-    p.add_argument("--images",       default="data/images")
-    p.add_argument("--lidar-dir",    default="data/lidar_test")
-    p.add_argument("--model",        default="yolov5s.pt")
-    p.add_argument("--weights",      default="pointnet_tesla.pt")
-    p.add_argument("--frames",       type=int, default=30)
-    p.add_argument("--save-json",    default=None)
-    p.add_argument("--save-dir",     default=None)
+    p.add_argument("--camera-only", action="store_true")
+    p.add_argument("--lidar-only", action="store_true")
+    p.add_argument("--fusion", action="store_true")
+    p.add_argument("--benchmark", action="store_true", help="Full benchmark of all components")
+    p.add_argument("--images", default="data/images")
+    p.add_argument("--lidar-dir", default="data/lidar_test")
+    p.add_argument("--model", default="yolov5s.pt")
+    p.add_argument("--weights", default="pointnet_tesla.pt")
+    p.add_argument("--frames", type=int, default=30)
+    p.add_argument("--save-json", default=None)
+    p.add_argument("--save-dir", default=None)
     args = p.parse_args()
 
     if args.camera_only:
@@ -343,7 +352,6 @@ if __name__ == "__main__":
     elif args.lidar_only:
         evaluate_lidar(args.lidar_dir, args.weights, save_json=args.save_json)
     elif args.fusion:
-        evaluate_fusion(args.images, args.lidar_dir, args.model, args.weights,
-                        args.frames, args.save_json)
+        evaluate_fusion(args.images, args.lidar_dir, args.model, args.weights, args.frames, args.save_json)
     else:
         run_full_benchmark(args.images, args.lidar_dir, args.frames, args.save_dir)
